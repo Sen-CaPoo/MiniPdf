@@ -492,8 +492,11 @@ internal static class DocxReader
                     // the content as flow paragraphs would insert that offset as bogus
                     // spacing.  Render it as a floating box instead; the converter resumes
                     // the text flow below the box (see RenderFloatingTextBoxes).
+                    // Every ST_RelFromV value other than paragraph and line (page, margin,
+                    // topMargin, bottomMargin, insideMargin, outsideMargin) is a page-based
+                    // reference; the floating renderer already positions those.
                     bool isAbsoluteWrapTopBottom = isWrapTopBottom
-                        && (vRelativeFrom == "page" || vRelativeFrom == "margin");
+                        && vRelativeFrom != "paragraph" && vRelativeFrom != "line";
 
                     if (isWrapNone || isAbsoluteWrapTopBottom)
                     {

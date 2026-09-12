@@ -29,14 +29,16 @@ public class DocxDrawingTests
     }
 
     /// <summary>
-    /// A wrapTopAndBottom text box anchored to the page must be exposed as a floating box on its
-    /// host paragraph. Its page offset is a coordinate, not spacing, so neither the box content
-    /// nor the host paragraph may be pushed down the flow by it.
+    /// A wrapTopAndBottom text box anchored to the page or to the margin must be exposed as a
+    /// floating box on its host paragraph. Its offset is a page coordinate, not spacing, so
+    /// neither the box content nor the host paragraph may be pushed down the flow by it.
     /// </summary>
-    [Fact]
-    public void Read_PageAnchoredWrapTopAndBottomTextBox_IsFloatingBox()
+    [Theory]
+    [InlineData("page", 1333500, 105f)]
+    [InlineData("margin", 419100, 33f)]
+    public void Read_AbsoluteWrapTopAndBottomTextBox_IsFloatingBox(string relativeFrom, int posOffsetEmu, float expectedYPt)
     {
-        using var stream = CreateDocxWithPageAnchoredWrapTopAndBottomTextBox();
+        using var stream = CreateDocxWithAbsoluteWrapTopAndBottomTextBox(relativeFrom, posOffsetEmu);
 
         var document = DocxReader.Read(stream);
         var paragraphs = document.Elements.OfType<DocxParagraph>().ToArray();
@@ -45,19 +47,23 @@ public class DocxDrawingTests
         var host = Assert.Single(paragraphs, paragraph => paragraph.Runs.Any(run => run.Text == "Host"));
         var box = Assert.Single(host.FloatingTextBoxes ?? []);
         Assert.True(box.IsWrapTopBottom);
-        Assert.Equal("page", box.VRelativeFrom);
-        Assert.InRange(box.YPt, 104.9f, 105.1f);
+        Assert.Equal(relativeFrom, box.VRelativeFrom);
+        Assert.InRange(box.YPt, expectedYPt - 0.1f, expectedYPt + 0.1f);
         Assert.InRange(host.SpacingBefore, -0.01f, 0.01f);
     }
 
     /// <summary>
     /// The text flow may not run beside a wrapTopAndBottom box: the host line stays above the
     /// box, the box text renders inside the box band, and the next paragraph resumes below it.
+    /// Both anchors put the box 105pt below the page top (the margin case is 33pt below the
+    /// 72pt top margin).
     /// </summary>
-    [Fact]
-    public void Convert_PageAnchoredWrapTopAndBottomTextBox_ResumesFlowBelowBox()
+    [Theory]
+    [InlineData("page", 1333500)]
+    [InlineData("margin", 419100)]
+    public void Convert_AbsoluteWrapTopAndBottomTextBox_ResumesFlowBelowBox(string relativeFrom, int posOffsetEmu)
     {
-        using var stream = CreateDocxWithPageAnchoredWrapTopAndBottomTextBox();
+        using var stream = CreateDocxWithAbsoluteWrapTopAndBottomTextBox(relativeFrom, posOffsetEmu);
 
         var document = DocxToPdfConverter.Convert(stream);
 
@@ -76,9 +82,9 @@ public class DocxDrawingTests
 
     /// <summary>
     /// Creates a minimal DOCX with three paragraphs; the second hosts a wrapTopAndBottom text
-    /// box anchored 105pt below the page top (positionV relativeFrom="page").
+    /// box whose vertical anchor uses the given relativeFrom value and EMU offset.
     /// </summary>
-    private static MemoryStream CreateDocxWithPageAnchoredWrapTopAndBottomTextBox()
+    private static MemoryStream CreateDocxWithAbsoluteWrapTopAndBottomTextBox(string relativeFrom, int posOffsetEmu)
     {
         var stream = new MemoryStream();
         using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
@@ -100,7 +106,7 @@ public class DocxDrawingTests
                 </Relationships>
                 """);
             AddEntry(archive, "word/document.xml",
-                """
+                $"""
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
                 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
                             xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
@@ -115,7 +121,7 @@ public class DocxDrawingTests
                           <wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251659264" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
                             <wp:simplePos x="0" y="0"/>
                             <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
-                            <wp:positionV relativeFrom="page"><wp:posOffset>1333500</wp:posOffset></wp:positionV>
+                            <wp:positionV relativeFrom="{relativeFrom}"><wp:posOffset>{posOffsetEmu}</wp:posOffset></wp:positionV>
                             <wp:extent cx="2540000" cy="508000"/>
                             <wp:wrapTopAndBottom/>
                             <wp:docPr id="1" name="Text Box 1"/>
