@@ -29,6 +29,132 @@ public class DocxDrawingTests
     }
 
     /// <summary>
+    /// A wrapTopAndBottom text box anchored to the page must be exposed as a floating box on its
+    /// host paragraph. Its page offset is a coordinate, not spacing, so neither the box content
+    /// nor the host paragraph may be pushed down the flow by it.
+    /// </summary>
+    [Fact]
+    public void Read_PageAnchoredWrapTopAndBottomTextBox_IsFloatingBox()
+    {
+        using var stream = CreateDocxWithPageAnchoredWrapTopAndBottomTextBox();
+
+        var document = DocxReader.Read(stream);
+        var paragraphs = document.Elements.OfType<DocxParagraph>().ToArray();
+
+        Assert.DoesNotContain(paragraphs, paragraph => paragraph.Runs.Any(run => run.Text == "Boxed"));
+        var host = Assert.Single(paragraphs, paragraph => paragraph.Runs.Any(run => run.Text == "Host"));
+        var box = Assert.Single(host.FloatingTextBoxes ?? []);
+        Assert.True(box.IsWrapTopBottom);
+        Assert.Equal("page", box.VRelativeFrom);
+        Assert.InRange(box.YPt, 104.9f, 105.1f);
+        Assert.InRange(host.SpacingBefore, -0.01f, 0.01f);
+    }
+
+    /// <summary>
+    /// The text flow may not run beside a wrapTopAndBottom box: the host line stays above the
+    /// box, the box text renders inside the box band, and the next paragraph resumes below it.
+    /// </summary>
+    [Fact]
+    public void Convert_PageAnchoredWrapTopAndBottomTextBox_ResumesFlowBelowBox()
+    {
+        using var stream = CreateDocxWithPageAnchoredWrapTopAndBottomTextBox();
+
+        var document = DocxToPdfConverter.Convert(stream);
+
+        var page = Assert.Single(document.Pages);
+        var host = Assert.Single(page.TextBlocks, block => block.Text == "Host");
+        var boxed = Assert.Single(page.TextBlocks, block => block.Text == "Boxed");
+        var after = Assert.Single(page.TextBlocks, block => block.Text == "After");
+
+        // The box occupies 105pt to 145pt from the top of the 792pt page.
+        const float bandTop = 792f - 105f;
+        const float bandBottom = 792f - 145f;
+        Assert.InRange(boxed.Y, bandBottom, bandTop);
+        Assert.True(host.Y > bandTop, $"Host baseline {host.Y} must stay above the box top {bandTop}.");
+        Assert.True(after.Y < bandBottom, $"Following baseline {after.Y} must resume below the box bottom {bandBottom}.");
+    }
+
+    /// <summary>
+    /// Creates a minimal DOCX with three paragraphs; the second hosts a wrapTopAndBottom text
+    /// box anchored 105pt below the page top (positionV relativeFrom="page").
+    /// </summary>
+    private static MemoryStream CreateDocxWithPageAnchoredWrapTopAndBottomTextBox()
+    {
+        var stream = new MemoryStream();
+        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            AddEntry(archive, "[Content_Types].xml",
+                """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+                  <Default Extension="xml" ContentType="application/xml"/>
+                  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+                  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+                </Types>
+                """);
+            AddEntry(archive, "_rels/.rels",
+                """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+                </Relationships>
+                """);
+            AddEntry(archive, "word/document.xml",
+                """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                            xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+                            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                            xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                  <w:body>
+                    <w:p><w:r><w:t>Intro</w:t></w:r></w:p>
+                    <w:p>
+                      <w:r><w:t>Host</w:t></w:r>
+                      <w:r>
+                        <w:drawing>
+                          <wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251659264" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+                            <wp:simplePos x="0" y="0"/>
+                            <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+                            <wp:positionV relativeFrom="page"><wp:posOffset>1333500</wp:posOffset></wp:positionV>
+                            <wp:extent cx="2540000" cy="508000"/>
+                            <wp:wrapTopAndBottom/>
+                            <wp:docPr id="1" name="Text Box 1"/>
+                            <a:graphic>
+                              <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                                <wps:wsp>
+                                  <wps:spPr>
+                                    <a:xfrm><a:off x="0" y="0"/><a:ext cx="2540000" cy="508000"/></a:xfrm>
+                                    <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                                    <a:noFill/>
+                                  </wps:spPr>
+                                  <wps:txbx>
+                                    <w:txbxContent>
+                                      <w:p><w:r><w:t>Boxed</w:t></w:r></w:p>
+                                    </w:txbxContent>
+                                  </wps:txbx>
+                                  <wps:bodyPr/>
+                                </wps:wsp>
+                              </a:graphicData>
+                            </a:graphic>
+                          </wp:anchor>
+                        </w:drawing>
+                      </w:r>
+                    </w:p>
+                    <w:p><w:r><w:t>After</w:t></w:r></w:p>
+                    <w:sectPr>
+                      <w:pgSz w:w="12240" w:h="15840"/>
+                      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+                    </w:sectPr>
+                  </w:body>
+                </w:document>
+                """);
+        }
+
+        stream.Position = 0;
+        return stream;
+    }
+
+    /// <summary>
     /// Creates a minimal DOCX whose single run has a simple shape followed by a grouped shape
     /// with an empty text box.
     /// </summary>

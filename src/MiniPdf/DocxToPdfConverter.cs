@@ -1997,6 +1997,11 @@ internal static class DocxToPdfConverter
 
     }
 
+    /// <summary>
+    /// Draws the paragraph's <c>w:pBdr</c> borders around the box that spans
+    /// <paramref name="paragraphTop"/> to <paramref name="paragraphBottom"/> on the
+    /// current page.  Empty paragraphs drop the top and bottom border spacing.
+    /// </summary>
     private static void RenderParagraphBorders(RenderState state, DocxParagraph paragraph, float paragraphTop, float paragraphBottom,
         bool isEmptyParagraph = false)
     {
@@ -2024,8 +2029,10 @@ internal static class DocxToPdfConverter
     }
 
     /// <summary>
-    /// Renders floating text boxes (wrapNone) at their absolute page positions.
-    /// These text boxes do not affect the normal document flow.
+    /// Renders floating text boxes at their absolute page positions.  wrapNone boxes
+    /// do not affect the normal document flow; page- or margin-anchored
+    /// wrapTopAndBottom boxes make the flow resume below the box when the next
+    /// line would collide with it.
     /// </summary>
     private static void RenderFloatingTextBoxes(RenderState state, List<DocxFloatingTextBox> boxes,
         DocxParagraph hostParagraph, float paragraphY)
@@ -2114,6 +2121,28 @@ internal static class DocxToPdfConverter
             else // margin
             {
                 boxTop = options.PageHeight - options.MarginTop - box.YPt;
+            }
+
+            // wrapTopAndBottom: text may not flow beside the box (LibreOffice's
+            // WrapTextMode_NONE claims both margins in sw/source/core/text/txtfly.cxx),
+            // so when the next line on this page would collide with the box band,
+            // resume the flow below the box bottom.
+            if (box.IsWrapTopBottom && targetPage == page)
+            {
+                // CurrentY is the baseline of the next line; estimate that line's
+                // box from the host paragraph's metrics and, on collision, move
+                // its top edge to the box bottom.
+                var bandBottom = boxTop - box.HeightPt;
+                var nextLineHeight = state.LastLineHeight > 0
+                    ? state.LastLineHeight
+                    : hostFontSize * GetFontMetricsFactor(hostFontName);
+                var nextAscent = options.GridLinePitch > 0 && hostParagraph.SnapToGrid
+                    ? GetGridAscentOffset(nextLineHeight, hostFontSize, hostFontName)
+                    : hostFontSize * GetTopOfPageAscentRatio(hostFontName, ResolveLineSpacingMul(hostParagraph, options));
+                var nextLineTop = state.CurrentY + nextAscent;
+                var nextLineBottom = state.CurrentY - Math.Max(0f, nextLineHeight - nextAscent);
+                if (nextLineTop > bandBottom && nextLineBottom < boxTop)
+                    state.AdvanceY(nextLineTop - bandBottom);
             }
 
             // Render fill background if present
