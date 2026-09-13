@@ -80,12 +80,110 @@ public class DocxDrawingTests
         Assert.True(after.Y < bandBottom, $"Following baseline {after.Y} must resume below the box bottom {bandBottom}.");
     }
 
+    [Fact]
+    public void Convert_AbsoluteWrapTopAndBottomTextBox_MixedFormatContinuationLinesAvoidBox()
+    {
+        var continuationText = string.Join(" ", Enumerable.Repeat("continuation", 40));
+        var afterParagraph = $"""
+            <w:p>
+              <w:r><w:rPr><w:b/></w:rPr><w:t>After </w:t></w:r>
+              <w:r><w:t>{continuationText}</w:t></w:r>
+            </w:p>
+            """;
+        using var stream = CreateDocxWithAbsoluteWrapTopAndBottomTextBox(
+            "page", 1841500, afterParagraph);
+
+        var document = DocxToPdfConverter.Convert(stream);
+
+        var page = Assert.Single(document.Pages);
+        var bodyBlocks = page.TextBlocks.Where(block => block.Text != "Boxed").ToArray();
+        const float bandTop = 792f - 145f;
+        const float bandBottom = 792f - 185f;
+        Assert.Contains(bodyBlocks, block => block.Text.Contains("continuation") && block.Y < bandBottom);
+        Assert.DoesNotContain(bodyBlocks, block => block.Y < bandTop && block.Y > bandBottom);
+    }
+
+    [Fact]
+    public void Convert_OverlappingWrapTopAndBottomTextBoxes_RescansEarlierObstacles()
+    {
+        var afterParagraphs = string.Join("", Enumerable.Range(1, 12)
+            .Select(index => $"<w:p><w:r><w:t>After {index}</w:t></w:r></w:p>"));
+        using var stream = CreateDocxWithAbsoluteWrapTopAndBottomTextBox(
+            "page", 2222500, afterParagraphs, secondPosOffsetEmu: 1841500);
+
+        var document = DocxToPdfConverter.Convert(stream);
+
+        var page = Assert.Single(document.Pages);
+        var bodyBlocks = page.TextBlocks
+            .Where(block => !block.Text.StartsWith("Boxed", StringComparison.Ordinal))
+            .ToArray();
+        const float upperBandTop = 792f - 145f;
+        const float lowerBandBottom = 792f - 215f;
+        Assert.Contains(bodyBlocks,
+            block => block.Text.StartsWith("After", StringComparison.Ordinal) && block.Y < lowerBandBottom);
+        Assert.DoesNotContain(bodyBlocks, block => block.Y < upperBandTop && block.Y > lowerBandBottom);
+    }
+
+    [Fact]
+    public void Convert_WrapTopAndBottomTextBoxBelowMargin_MovesContinuationToNextPage()
+    {
+        var continuationText = string.Join(" ", Enumerable.Repeat("continuation", 400));
+        var afterParagraph = $"""
+            <w:p>
+              <w:r><w:rPr><w:b/></w:rPr><w:t>After </w:t></w:r>
+              <w:r><w:t>{continuationText}</w:t></w:r>
+            </w:p>
+            """;
+        using var stream = CreateDocxWithAbsoluteWrapTopAndBottomTextBox(
+            "page", 8255000, afterParagraph, boxHeightEmu: 1270000);
+
+        var document = DocxToPdfConverter.Convert(stream);
+
+        Assert.True(document.Pages.Count >= 2);
+        Assert.DoesNotContain(document.Pages[0].TextBlocks,
+            block => block.Text != "Boxed" && block.Y < 72f);
+        Assert.Contains(document.Pages.Skip(1).SelectMany(page => page.TextBlocks),
+            block => block.Text.Contains("continuation"));
+    }
+
     /// <summary>
     /// Creates a minimal DOCX with three paragraphs; the second hosts a wrapTopAndBottom text
     /// box whose vertical anchor uses the given relativeFrom value and EMU offset.
     /// </summary>
-    private static MemoryStream CreateDocxWithAbsoluteWrapTopAndBottomTextBox(string relativeFrom, int posOffsetEmu)
+    private static MemoryStream CreateDocxWithAbsoluteWrapTopAndBottomTextBox(
+        string relativeFrom, int posOffsetEmu,
+        string afterParagraph = "<w:p><w:r><w:t>After</w:t></w:r></w:p>",
+        int boxHeightEmu = 508000, int? secondPosOffsetEmu = null)
     {
+        var secondTextBoxRun = secondPosOffsetEmu.HasValue
+            ? $"""
+              <w:r>
+                <w:drawing>
+                  <wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251659265" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+                    <wp:simplePos x="0" y="0"/>
+                    <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+                    <wp:positionV relativeFrom="{relativeFrom}"><wp:posOffset>{secondPosOffsetEmu.Value}</wp:posOffset></wp:positionV>
+                    <wp:extent cx="2540000" cy="{boxHeightEmu}"/>
+                    <wp:wrapTopAndBottom/>
+                    <wp:docPr id="2" name="Text Box 2"/>
+                    <a:graphic>
+                      <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                        <wps:wsp>
+                          <wps:spPr>
+                            <a:xfrm><a:off x="0" y="0"/><a:ext cx="2540000" cy="{boxHeightEmu}"/></a:xfrm>
+                            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                            <a:noFill/>
+                          </wps:spPr>
+                          <wps:txbx><w:txbxContent><w:p><w:r><w:t>Boxed2</w:t></w:r></w:p></w:txbxContent></wps:txbx>
+                          <wps:bodyPr/>
+                        </wps:wsp>
+                      </a:graphicData>
+                    </a:graphic>
+                  </wp:anchor>
+                </w:drawing>
+              </w:r>
+              """
+            : "";
         var stream = new MemoryStream();
         using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
         {
@@ -122,14 +220,14 @@ public class DocxDrawingTests
                             <wp:simplePos x="0" y="0"/>
                             <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
                             <wp:positionV relativeFrom="{relativeFrom}"><wp:posOffset>{posOffsetEmu}</wp:posOffset></wp:positionV>
-                            <wp:extent cx="2540000" cy="508000"/>
+                            <wp:extent cx="2540000" cy="{boxHeightEmu}"/>
                             <wp:wrapTopAndBottom/>
                             <wp:docPr id="1" name="Text Box 1"/>
                             <a:graphic>
                               <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
                                 <wps:wsp>
                                   <wps:spPr>
-                                    <a:xfrm><a:off x="0" y="0"/><a:ext cx="2540000" cy="508000"/></a:xfrm>
+                                    <a:xfrm><a:off x="0" y="0"/><a:ext cx="2540000" cy="{boxHeightEmu}"/></a:xfrm>
                                     <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
                                     <a:noFill/>
                                   </wps:spPr>
@@ -145,8 +243,9 @@ public class DocxDrawingTests
                           </wp:anchor>
                         </w:drawing>
                       </w:r>
+                      {secondTextBoxRun}
                     </w:p>
-                    <w:p><w:r><w:t>After</w:t></w:r></w:p>
+                    {afterParagraph}
                     <w:sectPr>
                       <w:pgSz w:w="12240" w:h="15840"/>
                       <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
